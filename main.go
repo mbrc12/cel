@@ -4,10 +4,15 @@ import (
 	"flag"
 	"io"
 	"os"
-
-	"github.com/BurntSushi/toml"
-	"github.com/k0kubun/pp/v3"
 )
+
+type Model struct {
+	Config *Config
+
+	Current      string
+	TaskIndex    int
+	SubTaskIndex int
+}
 
 func main() {
 	var configPath string
@@ -27,11 +32,15 @@ func main() {
 		panic("Failed to read config file!")
 	}
 
-	config := Config{}
-	err = toml.Unmarshal(configData, &config)
-	if err != nil {
-		panic(err)
+	config := new(Config)
+	config.Parse(configData)
+
+	model := Model{
+		Config:       config,
+		Current:      "idle",
+		TaskIndex:    -1,
+		SubTaskIndex: 0,
 	}
 
-	pp.Print(config)
+	_ = model
 }
