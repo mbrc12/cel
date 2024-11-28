@@ -45,31 +45,4 @@ func (c *Command) UnmarshalTOML(data any) error {
 		return errors.New("Command has to be a string or an array of strings")
 	}
 	return nil
-
-	// value := reflect.ValueOf(data)
-	// println(value.Kind())
-	// switch value.Kind() {
-	//
-	// case reflect.String:
-	// 	c.Commands = []string{data.(string)}
-	//
-	// case reflect.Slice:
-	// 	println(value.Len())
-	// 	if value.Len() == 0 {
-	// 		return errors.New("Command array cannot be empty")
-	// 	}
-	// 	c.Commands = make([]string, value.Len())
-	// 	for i := 0; i < value.Len(); i++ {
-	// 		cmd, ok := value.Index(i).Interface().(string)
-	// 		if !ok {
-	// 			return errors.New("Command array can only contain strings")
-	// 		}
-	// 		c.Commands[i] = cmd
-	// 	}
-	//
-	// default:
-	// 	return errors.New("Command has to be a string or an array of strings")
-	// }
-	//
-	// return nil
 }
