@@ -5,9 +5,9 @@ files = [ "*.toml" ]
 run = [ "ls" ]
 
 [[menu]]
-press = "n"
+key = "n"
 run = [ "neofetch" ]
 
 [[menu]]
-press = "a"
+key = "a"
 run = [["echo 'Hello, World!'", "ls"]]

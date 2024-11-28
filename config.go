@@ -11,13 +11,13 @@ type Config struct {
 }
 
 type WatchTask struct {
-	Watch []string  `toml:"watch"`
+	Files []string  `toml:"files"`
 	Run   []Command `toml:"run"`
 }
 
 type MenuTask struct {
-	Button string    `toml:"button"`
-	Run    []Command `toml:"run"`
+	Key string    `toml:"key"`
+	Run []Command `toml:"run"`
 }
 
 type Command struct {
