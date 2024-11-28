@@ -2,13 +2,19 @@ package main
 
 import (
 	"errors"
+	"strconv"
 
 	"github.com/BurntSushi/toml"
-	"github.com/k0kubun/pp/v3"
+)
+
+var (
+	defaultPrefix    = []string{"bash", "-c"}
+	defaultStoreSize = StoreSize(1024 * 1024) // 1MB
 )
 
 type Config struct {
-	Prefix     string      `toml:"prefix"`
+	Prefix     []string    `toml:"prefix"`
+	Store      StoreSize   `toml:"store"`
 	WatchTasks []WatchTask `toml:"watch"`
 	MenuTasks  []MenuTask  `toml:"menu"`
 }
@@ -30,15 +36,22 @@ func (self *Config) Parse(data []byte) error {
 		id++
 	}
 
-	pp.Println(self)
+	if self.Prefix == nil {
+		self.Prefix = defaultPrefix
+	}
+
+	if self.Store == StoreSize(0) {
+		self.Store = defaultStoreSize
+	}
 
 	return nil
 }
 
 type WatchTask struct {
-	Id    int
-	Files []string  `toml:"files"`
-	Run   []Command `toml:"run"`
+	Id      int
+	Files   []string  `toml:"files"`
+	Exclude []string  `toml:"exclude"`
+	Run     []Command `toml:"run"`
 }
 
 type MenuTask struct {
@@ -71,5 +84,38 @@ func (self *Command) UnmarshalTOML(data any) error {
 	default:
 		return errors.New("Command has to be a string or an array of strings")
 	}
+	return nil
+}
+
+type StoreSize uint64
+
+func (self *StoreSize) UnmarshalText(data []byte) error {
+	s := string(data)
+	base, err := strconv.ParseInt(s[:len(s)-1], 10, 64)
+	if err != nil {
+		return err
+	}
+
+	switch s[len(s)-1] {
+	case 'K':
+		base *= 1024
+	case 'M':
+		base *= 1024 * 1024
+	case 'G':
+		base *= 1024 * 1024 * 1024
+	case 'B':
+		// do nothing
+	default:
+		last_digit := int64(s[len(s)-1] - '0')
+		if last_digit >= 0 && last_digit <= 9 {
+			base *= 10
+			base += last_digit
+		} else {
+			return errors.New("Invalid size suffix")
+		}
+	}
+
+	*self = StoreSize(base)
+
 	return nil
 }

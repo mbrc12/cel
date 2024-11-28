@@ -1,7 +1,8 @@
-prefix = "fish -c"
+prefix = ["fish", "-c"]
+store = "1M"
 
 [[watch]]
-files = [ "*.toml" ]
+files = [ '**/*.go']
 run = [ "ls" ]
 
 [[menu]]
