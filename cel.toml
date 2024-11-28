@@ -1,0 +1,13 @@
+prefix = "fish -c"
+
+[[watch]]
+files = [ "*.toml" ]
+run = [ "ls" ]
+
+[[menu]]
+press = "n"
+run = [ "neofetch" ]
+
+[[menu]]
+press = "a"
+run = [["echo 'Hello, World!'", "ls"]]
