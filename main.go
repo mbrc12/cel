@@ -33,7 +33,7 @@ type UIState struct {
 func main() {
 	var configPath string
 
-	flag.StringVar(&configPath, "c", "cel.toml", "path to config file")
+	flag.StringVar(&configPath, "c", "stag.toml", "path to config file")
 
 	flag.Parse()
 
@@ -109,8 +109,11 @@ type newOutputLine struct {
 	line string
 }
 
+// sinkWatcher watches a sink channel and sends a message to the update loop
+// when it receives a new line.
 func sinkWatcher(id int, sink chan string) tea.Cmd {
 	return func() tea.Msg {
+		println("sinkWatcher")
 		return newOutputLine{id, <-sink}
 	}
 }

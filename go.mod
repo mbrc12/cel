@@ -1,4 +1,4 @@
-module mbrc12/cel
+module mbrc12/stag
 
 go 1.23.3
 
