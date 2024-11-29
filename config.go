@@ -28,11 +28,17 @@ func (self *Config) Parse(data []byte) error {
 	id := 0
 	for i := range self.WatchTasks {
 		self.WatchTasks[i].Id = id
+		if len(self.WatchTasks[i].Run.Commands) == 0 {
+			return errors.New("Watch task command cannot be empty!")
+		}
 		id++
 	}
 
 	for i := range self.MenuTasks {
 		self.MenuTasks[i].Id = id
+		if len(self.MenuTasks[i].Run.Commands) == 0 {
+			return errors.New("Menu task command cannot be empty!")
+		}
 		id++
 	}
 
@@ -49,15 +55,15 @@ func (self *Config) Parse(data []byte) error {
 
 type WatchTask struct {
 	Id      int
-	Files   []string  `toml:"files"`
-	Exclude []string  `toml:"exclude"`
-	Run     []Command `toml:"run"`
+	Files   []string `toml:"files"`
+	Exclude []string `toml:"exclude"`
+	Run     Command  `toml:"run"`
 }
 
 type MenuTask struct {
 	Id  int
-	Key string    `toml:"key"`
-	Run []Command `toml:"run"`
+	Key string  `toml:"key"`
+	Run Command `toml:"run"`
 }
 
 type Command struct {

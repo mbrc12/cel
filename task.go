@@ -1,160 +1,190 @@
 package main
 
 import (
-	"io/fs"
-	"path/filepath"
-	"strings"
-	"time"
+	"fmt"
 
+	"github.com/fsnotify/fsnotify"
+	"github.com/go-cmd/cmd"
 	"github.com/k0kubun/pp/v3"
 )
 
+type TaskCmd int
+type TaskStatus int
+
+const (
+	TaskCmdQuit TaskCmd = iota
+	TaskCmdStart
+
+	TaskRunning TaskStatus = iota
+	TaskIdle
+	TaskNewContents
+	TaskFinished
+	TaskError
+	TaskRestarting
+)
+
 type Task struct {
+	Prefix     []string
+	Commands   []string
+	MaxHistory uint64
+
 	Output []byte
 
 	Files []string
 
-	Status           string
-	Running          bool
-	StartTime        time.Time
-	SubtaskStartTime time.Time
+	SubtaskIndex int
+
+	StatusLong string
+	Status     TaskStatus
+
+	Name string
+
+	IsMenuTask bool
 }
 
-func (self *Task) Start() {
-	self.Running = true
-	self.StartTime = time.Now()
+func (self *Task) Init() {
+	self.Output = make([]byte, 0)
+	self.Files = nil
+	self.Status = TaskIdle
+}
+
+func (self *Task) Start(events <-chan TaskCmd) {
+	// dont reset output
+
+	var watcherEvt <-chan fsnotify.Event
+	var watcherErr <-chan error
+
+	if self.Files != nil {
+		watcher, err := fsnotify.NewWatcher()
+		if err != nil {
+			panic(err)
+		}
+
+		defer watcher.Close()
+
+		for _, file := range self.Files {
+			err = watcher.Add(file)
+			if err != nil {
+				panic(err)
+			}
+		}
+
+		watcherEvt = watcher.Events
+		watcherErr = watcher.Errors
+	}
+
+	streamingCmdOptions := cmd.Options{
+		Buffered:  false,
+		Streaming: true,
+	}
+
+	updateStatus := func(statusLong string, status TaskStatus) {
+		self.StatusLong = statusLong
+		self.Status = status
+		self.appendOutput([]byte(statusLong))
+	}
+
+	wait := make(chan struct{})
+
+	go func() {
+		var index int
+		if self.IsMenuTask {
+			index = -1
+		} else {
+			index = 0
+		}
+		for {
+			args := append(self.Prefix[1:], fmt.Sprintf("'%s'", self.Commands[index]))
+			proc := cmd.NewCmdOptions(streamingCmdOptions, self.Prefix[0], args...)
+
+			var cmdStatus <-chan cmd.Status
+
+			if index >= 0 {
+				self.SubtaskIndex = index
+
+				cmdStatus = proc.Start()
+				updateStatus(fmt.Sprintf("Running: %s\n", self.Commands[index]), TaskRunning)
+			}
+
+			select {
+			case msg := <-events:
+				switch msg {
+				case TaskCmdQuit:
+					proc.Stop()
+					close(wait)
+					return
+				case TaskCmdStart:
+					proc.Stop()
+					index = 0 // start the menu task, or restart the current task
+					continue
+				}
+
+			case msg := <-watcherEvt:
+				status := fmt.Sprintf("Changed file: %s, Restarting\n", msg.Name)
+				updateStatus(status, TaskRestarting)
+				proc.Stop()
+				index = 0
+				continue
+
+			case msg := <-watcherErr:
+				if msg != nil {
+					status := fmt.Sprintf("Watcher error: %s\n", msg)
+					updateStatus(status, TaskError)
+					proc.Stop()
+					close(wait)
+					return
+				}
+
+			case status := <-cmdStatus:
+				if status.Complete {
+					status := fmt.Sprintf("Finished: %s\n", status.Cmd)
+					updateStatus(status, TaskFinished) // soon rewritten by next command
+					index++
+					if index == len(self.Commands) {
+						close(wait)
+						return
+					}
+				}
+
+				if status.Error != nil || status.Exit != 0 {
+					status := fmt.Sprintf("Error: %s\n", status.Error)
+					updateStatus(status, TaskError)
+					close(wait)
+					return
+				}
+
+			case msg := <-proc.Stdout:
+				self.appendOutput([]byte(msg))
+
+			case msg := <-proc.Stderr:
+				self.appendOutput([]byte(msg))
+			}
+		}
+	}()
+
+	<-wait
 }
 
 // Call atmost once at the start of setting this up
 func (self *Task) Watch(files []string, exclude []string) {
-	expand := func(pats []string) ([]string, error) {
-		var result1 []string
-
-		// first expand extensions
-
-		for _, pat := range pats {
-			result1 = append(result1, expandExtension(pat)...)
-		}
-
-		// then expand globs
-
-		var result2 []string
-
-		for _, pat := range result1 {
-			matches, err := expandGlob(pat)
-			if err != nil {
-				return nil, err
-			}
-
-			result2 = append(result2, matches...)
-		}
-
-		return result2, nil
-	}
-
-	files, err := expand(files)
+	files, err := Globs(files)
 	if err != nil {
 		panic(err)
 	}
 
-	exclude, err = expand(exclude)
+	exclude, err = Globs(exclude)
 	if err != nil {
 		panic(err)
 	}
 
-	self.Files = subtractSlice(files, exclude)
+	self.Files = SubtractSlice(files, exclude)
 
 	pp.Println(self.Files)
 }
 
-func (self *Task) Kill() {
-}
-
-func expandGlob(pat string) ([]string, error) {
-	pieces := strings.Split(pat, "**")
-
-	if len(pieces) == 1 {
-		return filepath.Glob(pat)
+func (self *Task) appendOutput(output []byte) {
+	self.Output = append(self.Output, output...)
+	if len(self.Output) > int(self.MaxHistory) {
+		self.Output = self.Output[len(self.Output)-int(self.MaxHistory):]
 	}
-
-	matches := []string{""}
-
-	// say the glob is a/b/**/c/**/d/e.f
-
-	// pieces = [a/b/, c/, d/e.f]. Say current piece is c/, and everything that matches a/b/** is in matches
-	for _, piece := range pieces {
-
-		matchSet := make(map[string]bool)
-
-		// everything matching a/b/** is in matches
-		// we glob now
-		for _, match := range matches {
-			validChildren, err := filepath.Glob(match + piece)
-			if err != nil {
-				return nil, err
-			}
-
-			// for each child, we need to find all subchildren, to prep for the next **
-
-			for _, child := range validChildren {
-				err := filepath.WalkDir(child, func(path string, info fs.DirEntry, err error) error {
-					matchSet[path] = true
-					return nil
-				})
-
-				if err != nil {
-					return nil, err
-				}
-			}
-		}
-
-		newMatches := make([]string, 0, len(matchSet))
-		for match := range matchSet {
-			newMatches = append(newMatches, match)
-		}
-
-		matches = newMatches
-	}
-
-	return matches, nil
-}
-
-func expandExtension(pat string) []string {
-	if pat == "" || pat[len(pat)-1] != '}' {
-		return []string{pat}
-	}
-
-	// Find the last '{' in the pattern
-	i := strings.LastIndexByte(pat, '{')
-	if i == -1 {
-		return []string{pat}
-	}
-
-	exts := strings.Split(pat[i+1:len(pat)-1], ",")
-
-	result := make([]string, 0, len(exts))
-
-	for _, ext := range exts {
-		result = append(result, pat[:i]+strings.TrimSpace(ext))
-	}
-
-	return result
-}
-
-func subtractSlice(a, b []string) []string {
-	set := make(map[string]bool)
-
-	for _, item := range b {
-		set[item] = true
-	}
-
-	var result []string
-
-	for _, item := range a {
-		if !set[item] {
-			result = append(result, item)
-		}
-	}
-
-	return result
 }

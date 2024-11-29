@@ -2,13 +2,14 @@ prefix = ["fish", "-c"]
 store = "1M"
 
 [[watch]]
-files = [ '**/*.go']
-run = [ "ls" ]
+files = [ '**/*' ]
+exclude = [ '.*/**', '*.toml' ]
+run = "ls"
 
 [[menu]]
 key = "n"
-run = [ "neofetch" ]
+run = "neofetch"
 
 [[menu]]
 key = "a"
-run = [["echo 'Hello, World!'", "ls"]]
+run = [ "echo 'Hello, World!'", "ls" ]

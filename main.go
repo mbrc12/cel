@@ -6,14 +6,12 @@ import (
 	"os"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/k0kubun/pp/v3"
 )
 
 type Model struct {
 	Config *Config
 
-	TaskIndex    int
-	SubTaskIndex int
+	TaskIndex int
 
 	Restarting bool
 
@@ -47,9 +45,8 @@ func main() {
 	config.Parse(configData)
 
 	model := Model{
-		Config:       config,
-		TaskIndex:    -1,
-		SubTaskIndex: 0,
+		Config:    config,
+		TaskIndex: 0,
 
 		Restarting: false,
 
@@ -59,10 +56,38 @@ func main() {
 
 	_ = model
 
-	// program := tea.NewProgram(&model)
-	// if _, err := program.Run(); err != nil {
-	// 	panic(err)
-	// }
+	for _, taskConfig := range config.WatchTasks {
+		task := &Task{
+			Prefix:     config.Prefix,
+			Commands:   taskConfig.Run.Commands,
+			MaxHistory: uint64(config.Store),
+		}
+
+		task.Init()
+		task.Watch(taskConfig.Files, taskConfig.Exclude)
+
+		model.Tasks[taskConfig.Id] = task
+
+		var taskEvts chan TaskCmd
+		task.Start(taskEvts)
+	}
+
+	for _, taskConfig := range config.MenuTasks {
+		task := &Task{
+			Prefix:     config.Prefix,
+			Commands:   taskConfig.Run.Commands,
+			MaxHistory: uint64(config.Store),
+		}
+
+		task.Init()
+
+		model.Tasks[taskConfig.Id] = task
+	}
+
+	program := tea.NewProgram(&model)
+	if _, err := program.Run(); err != nil {
+		panic(err)
+	}
 }
 
 func (self *Model) Init() tea.Cmd {
@@ -82,5 +107,6 @@ func (self *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (self *Model) View() string {
-	return pp.Sprintf("%v", self.Config)
+	print(self.Tasks[0].StatusLong)
+	return string(self.Tasks[0].StatusLong)
 }
