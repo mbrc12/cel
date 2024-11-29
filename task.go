@@ -5,7 +5,6 @@ import (
 
 	"github.com/fsnotify/fsnotify"
 	"github.com/go-cmd/cmd"
-	"github.com/k0kubun/pp/v3"
 )
 
 type TaskCmd int
@@ -24,11 +23,10 @@ const (
 )
 
 type Task struct {
-	Prefix     []string
-	Commands   []string
-	MaxHistory uint64
+	Prefix   []string
+	Commands []string
 
-	Output []byte
+	OutputChan chan string
 
 	Files []string
 
@@ -40,16 +38,21 @@ type Task struct {
 	Name string
 
 	IsMenuTask bool
+
+	Closed bool
 }
 
 func (self *Task) Init() {
-	self.Output = make([]byte, 0)
 	self.Files = nil
 	self.Status = TaskIdle
+	self.Closed = true
+	self.SubtaskIndex = -1
 }
 
 func (self *Task) Start(events <-chan TaskCmd) {
 	// dont reset output
+
+	self.Closed = false
 
 	var watcherEvt <-chan fsnotify.Event
 	var watcherErr <-chan error
@@ -81,88 +84,94 @@ func (self *Task) Start(events <-chan TaskCmd) {
 	updateStatus := func(statusLong string, status TaskStatus) {
 		self.StatusLong = statusLong
 		self.Status = status
-		self.appendOutput([]byte(statusLong))
+		self.OutputChan <- fmt.Sprintf("%s", statusLong)
 	}
 
 	wait := make(chan struct{})
 
 	go func() {
-		var index int
-		if self.IsMenuTask {
-			index = -1
-		} else {
-			index = 0
+		proc := &cmd.Cmd{}
+		defer proc.Stop()
+
+		nextTask := make(chan int, 1)
+
+		if !self.IsMenuTask {
+			nextTask <- 0
 		}
+
 		for {
-			args := append(self.Prefix[1:], fmt.Sprintf("'%s'", self.Commands[index]))
-			proc := cmd.NewCmdOptions(streamingCmdOptions, self.Prefix[0], args...)
+			select {
+			case index := <-nextTask:
+				if self.SubtaskIndex >= 0 {
+					proc.Stop() // stop previous task
+				}
 
-			var cmdStatus <-chan cmd.Status
+				args := append(self.Prefix[1:], fmt.Sprintf("'%s'", self.Commands[index]))
 
-			if index >= 0 {
+				proc = cmd.NewCmdOptions(streamingCmdOptions, self.Prefix[0], args...)
+				proc.Start()
+
 				self.SubtaskIndex = index
 
-				cmdStatus = proc.Start()
-				updateStatus(fmt.Sprintf("Running: %s\n", self.Commands[index]), TaskRunning)
-			}
+				updateStatus(fmt.Sprintf("Running: %s", self.Commands[index]), TaskRunning)
 
-			select {
 			case msg := <-events:
 				switch msg {
 				case TaskCmdQuit:
-					proc.Stop()
 					close(wait)
 					return
 				case TaskCmdStart:
-					proc.Stop()
-					index = 0 // start the menu task, or restart the current task
+					nextTask <- 0
 					continue
 				}
 
 			case msg := <-watcherEvt:
-				status := fmt.Sprintf("Changed file: %s, Restarting\n", msg.Name)
+				status := fmt.Sprintf("Changed file: %s, restarting ...", msg.Name)
 				updateStatus(status, TaskRestarting)
-				proc.Stop()
-				index = 0
+				nextTask <- 0
 				continue
 
 			case msg := <-watcherErr:
 				if msg != nil {
-					status := fmt.Sprintf("Watcher error: %s\n", msg)
-					updateStatus(status, TaskError)
-					proc.Stop()
-					close(wait)
-					return
-				}
-
-			case status := <-cmdStatus:
-				if status.Complete {
-					status := fmt.Sprintf("Finished: %s\n", status.Cmd)
-					updateStatus(status, TaskFinished) // soon rewritten by next command
-					index++
-					if index == len(self.Commands) {
-						close(wait)
-						return
-					}
-				}
-
-				if status.Error != nil || status.Exit != 0 {
-					status := fmt.Sprintf("Error: %s\n", status.Error)
+					status := fmt.Sprintf("Watcher error: %s", msg)
 					updateStatus(status, TaskError)
 					close(wait)
 					return
 				}
 
 			case msg := <-proc.Stdout:
-				self.appendOutput([]byte(msg))
+				self.OutputChan <- msg
 
 			case msg := <-proc.Stderr:
-				self.appendOutput([]byte(msg))
+				self.OutputChan <- msg
+
+			case <-proc.Done():
+
+				procStatus := proc.Status()
+
+				if procStatus.Error != nil || procStatus.Exit != 0 {
+					status := fmt.Sprintf("Error: %s", procStatus.Error)
+					updateStatus(status, TaskError)
+					return
+				}
+
+				// finished successfully
+
+				status := fmt.Sprintf("Finished.")
+				updateStatus(status, TaskFinished) // soon rewritten by next command
+				nextIndex := self.SubtaskIndex + 1
+				if nextIndex == len(self.Commands) {
+					self.SubtaskIndex = -1
+					proc = &cmd.Cmd{}
+					continue
+				}
+				nextTask <- nextIndex
 			}
 		}
 	}()
 
 	<-wait
+	self.Closed = true
 }
 
 // Call atmost once at the start of setting this up
@@ -178,13 +187,4 @@ func (self *Task) Watch(files []string, exclude []string) {
 	}
 
 	self.Files = SubtractSlice(files, exclude)
-
-	pp.Println(self.Files)
-}
-
-func (self *Task) appendOutput(output []byte) {
-	self.Output = append(self.Output, output...)
-	if len(self.Output) > int(self.MaxHistory) {
-		self.Output = self.Output[len(self.Output)-int(self.MaxHistory):]
-	}
 }

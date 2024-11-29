@@ -4,12 +4,12 @@ store = "1M"
 [[watch]]
 files = [ '**/*' ]
 exclude = [ '.*/**', '*.toml' ]
-run = "ls"
-
-[[menu]]
-key = "n"
 run = "neofetch"
 
-[[menu]]
-key = "a"
-run = [ "echo 'Hello, World!'", "ls" ]
+# [[menu]]
+# key = "n"
+# run = "neofetch"
+#
+# [[menu]]
+# key = "a"
+# run = [ "echo 'Hello, World!'", "ls" ]

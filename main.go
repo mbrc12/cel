@@ -5,22 +5,29 @@ import (
 	"io"
 	"os"
 
+	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 )
 
 type Model struct {
 	Config *Config
 
-	TaskIndex int
-
+	TaskIndex  int
 	Restarting bool
 
-	Tasks    map[int]*Task
-	UIStates map[int]*UIState
+	OutputSinks map[int]chan string
+	Outputs     map[int]string
+
+	ControlChans map[int]chan TaskCmd
+
+	Tasks map[int]*Task
+
+	UIStates map[int]UIState
 }
 
 type UIState struct {
-	Scrolling bool
+	Viewport viewport.Model
+	Data     string
 }
 
 func main() {
@@ -44,44 +51,51 @@ func main() {
 	config := new(Config)
 	config.Parse(configData)
 
+	sinks := make(map[int]chan string)
+	control := make(map[int]chan TaskCmd)
+	tasks := make(map[int]*Task)
+
+	setupTask := func(id int, commands []string, menuTask bool, setupFn func(task *Task)) {
+		task := &Task{
+			OutputChan: sinks[id],
+			Prefix:     config.Prefix,
+			Commands:   commands,
+			IsMenuTask: menuTask,
+		}
+
+		task.Init()
+
+		tasks[id] = task
+
+		var taskEvts chan TaskCmd
+		control[id] = taskEvts
+
+		setupFn(task)
+
+		go func() { task.Start(taskEvts) }()
+	}
+
+	for _, taskConfig := range config.WatchTasks {
+		setupTask(taskConfig.Id, taskConfig.Run.Commands, false, func(task *Task) {
+			task.Watch(taskConfig.Files, taskConfig.Exclude)
+		})
+	}
+
+	for _, taskConfig := range config.MenuTasks {
+		setupTask(taskConfig.Id, taskConfig.Run.Commands, true, func(task *Task) {})
+	}
+
 	model := Model{
 		Config:    config,
 		TaskIndex: 0,
 
+		OutputSinks:  sinks,
+		ControlChans: control,
+
 		Restarting: false,
 
-		Tasks:    make(map[int]*Task),
-		UIStates: make(map[int]*UIState),
-	}
-
-	_ = model
-
-	for _, taskConfig := range config.WatchTasks {
-		task := &Task{
-			Prefix:     config.Prefix,
-			Commands:   taskConfig.Run.Commands,
-			MaxHistory: uint64(config.Store),
-		}
-
-		task.Init()
-		task.Watch(taskConfig.Files, taskConfig.Exclude)
-
-		model.Tasks[taskConfig.Id] = task
-
-		var taskEvts chan TaskCmd
-		task.Start(taskEvts)
-	}
-
-	for _, taskConfig := range config.MenuTasks {
-		task := &Task{
-			Prefix:     config.Prefix,
-			Commands:   taskConfig.Run.Commands,
-			MaxHistory: uint64(config.Store),
-		}
-
-		task.Init()
-
-		model.Tasks[taskConfig.Id] = task
+		Tasks:    tasks,
+		UIStates: make(map[int]UIState),
 	}
 
 	program := tea.NewProgram(&model)
@@ -90,8 +104,25 @@ func main() {
 	}
 }
 
+type newOutputLine struct {
+	id   int
+	line string
+}
+
+func sinkWatcher(id int, sink chan string) tea.Cmd {
+	return func() tea.Msg {
+		return newOutputLine{id, <-sink}
+	}
+}
+
 func (self *Model) Init() tea.Cmd {
-	return nil
+	cmds := make([]tea.Cmd, 0)
+
+	for id, c := range self.OutputSinks {
+		cmds = append(cmds, sinkWatcher(id, c))
+	}
+
+	return tea.Batch(cmds...)
 }
 
 func (self *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -101,12 +132,20 @@ func (self *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "esc":
 			return self, tea.Quit
 		}
+
+	case newOutputLine:
+		self.Outputs[msg.id] += msg.line + "\n"
+
+		// trim to size
+		maxSize := int(self.Config.Store)
+		if len(self.Outputs[msg.id]) > maxSize {
+			self.Outputs[msg.id] = self.Outputs[msg.id][len(self.Outputs[msg.id])-maxSize:]
+		}
 	}
 
 	return self, nil
 }
 
 func (self *Model) View() string {
-	print(self.Tasks[0].StatusLong)
-	return string(self.Tasks[0].StatusLong)
+	return string(self.Outputs[self.TaskIndex])
 }
