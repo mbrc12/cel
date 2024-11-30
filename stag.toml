@@ -1,10 +1,11 @@
-prefix = ["fish", "-c"]
+shell = "fish"
 store = "1M"
 
 [[watch]]
 files = [ '**/*' ]
-exclude = [ '.*/**', '*.toml' ]
+exclude = [ '.*/**', '*.toml', '*.log' ]
 run = "neofetch"
+log = "log.log"
 
 # [[menu]]
 # key = "n"

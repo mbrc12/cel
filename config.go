@@ -8,12 +8,20 @@ import (
 )
 
 var (
-	defaultPrefix    = []string{"bash", "-c"}
+	defaultShell     = "bash"
 	defaultStoreSize = StoreSize(1024 * 1024) // 1MB
+
+	formats = map[string]string{
+		"bash": "bash -c %",
+		"sh":   "sh -c %",
+		"fish": "fish -c %",
+		"zsh":  "zsh -c %",
+	}
 )
 
 type Config struct {
-	Prefix     []string    `toml:"prefix"`
+	Shell      string `toml:"shell"`
+	Format     string
 	Store      StoreSize   `toml:"store"`
 	WatchTasks []WatchTask `toml:"watch"`
 	MenuTasks  []MenuTask  `toml:"menu"`
@@ -42,8 +50,14 @@ func (self *Config) Parse(data []byte) error {
 		id++
 	}
 
-	if self.Prefix == nil {
-		self.Prefix = defaultPrefix
+	if self.Shell == "" {
+		self.Shell = defaultShell
+	}
+
+	var ok bool
+	self.Format, ok = formats[self.Shell]
+	if !ok {
+		return errors.New("Unsupported shell")
 	}
 
 	if self.Store == StoreSize(0) {
@@ -53,17 +67,21 @@ func (self *Config) Parse(data []byte) error {
 	return nil
 }
 
+type BaseTask struct {
+	Id  int
+	Run Command `toml:"run"`
+	Log string  `toml:"log"`
+}
+
 type WatchTask struct {
-	Id      int
+	BaseTask
 	Files   []string `toml:"files"`
 	Exclude []string `toml:"exclude"`
-	Run     Command  `toml:"run"`
 }
 
 type MenuTask struct {
-	Id  int
-	Key string  `toml:"key"`
-	Run Command `toml:"run"`
+	BaseTask
+	Key string `toml:"key"`
 }
 
 type Command struct {

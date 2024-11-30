@@ -4,9 +4,15 @@ import (
 	"flag"
 	"io"
 	"os"
+	"regexp"
 
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/k0kubun/pp/v3"
+)
+
+var (
+	log = pp.Println
 )
 
 type Model struct {
@@ -20,9 +26,8 @@ type Model struct {
 
 	ControlChans map[int]chan TaskCmd
 
-	Tasks map[int]*Task
-
-	UIStates map[int]UIState
+	Tasks    map[int]*Task
+	UIStates map[int]*UIState
 }
 
 type UIState struct {
@@ -49,17 +54,24 @@ func main() {
 	}
 
 	config := new(Config)
-	config.Parse(configData)
+	err = config.Parse(configData)
+	if err != nil {
+		panic(err)
+	}
 
 	sinks := make(map[int]chan string)
 	control := make(map[int]chan TaskCmd)
 	tasks := make(map[int]*Task)
 
-	setupTask := func(id int, commands []string, menuTask bool, setupFn func(task *Task)) {
+	setupTask := func(id int, commands []string, menuTask bool, logFile string, setupFn func(task *Task)) {
+		sinks[id] = make(chan string) // dont buffer output
+
 		task := &Task{
+			Format:   config.Format,
+			Commands: commands,
+			LogFile:  logFile,
+
 			OutputChan: sinks[id],
-			Prefix:     config.Prefix,
-			Commands:   commands,
 			IsMenuTask: menuTask,
 		}
 
@@ -67,7 +79,7 @@ func main() {
 
 		tasks[id] = task
 
-		var taskEvts chan TaskCmd
+		taskEvts := make(chan TaskCmd, 10) // buffer 10 events from client
 		control[id] = taskEvts
 
 		setupFn(task)
@@ -76,13 +88,13 @@ func main() {
 	}
 
 	for _, taskConfig := range config.WatchTasks {
-		setupTask(taskConfig.Id, taskConfig.Run.Commands, false, func(task *Task) {
+		setupTask(taskConfig.Id, taskConfig.Run.Commands, false, taskConfig.Log, func(task *Task) {
 			task.Watch(taskConfig.Files, taskConfig.Exclude)
 		})
 	}
 
 	for _, taskConfig := range config.MenuTasks {
-		setupTask(taskConfig.Id, taskConfig.Run.Commands, true, func(task *Task) {})
+		setupTask(taskConfig.Id, taskConfig.Run.Commands, true, taskConfig.Log, func(task *Task) {})
 	}
 
 	model := Model{
@@ -92,11 +104,17 @@ func main() {
 		OutputSinks:  sinks,
 		ControlChans: control,
 
+		Outputs: make(map[int]string),
+
 		Restarting: false,
 
 		Tasks:    tasks,
-		UIStates: make(map[int]UIState),
+		UIStates: make(map[int]*UIState),
 	}
+
+	defer func() {
+		print(model.Outputs[0])
+	}()
 
 	program := tea.NewProgram(&model)
 	if _, err := program.Run(); err != nil {
@@ -111,18 +129,19 @@ type newOutputLine struct {
 
 // sinkWatcher watches a sink channel and sends a message to the update loop
 // when it receives a new line.
-func sinkWatcher(id int, sink chan string) tea.Cmd {
+func (self *Model) sinkWatcher(id int) tea.Cmd {
 	return func() tea.Msg {
-		println("sinkWatcher")
-		return newOutputLine{id, <-sink}
+		line := <-self.OutputSinks[id]
+		line = ansiSanitize(line)
+		return newOutputLine{id, line}
 	}
 }
 
 func (self *Model) Init() tea.Cmd {
-	cmds := make([]tea.Cmd, 0)
+	cmds := []tea.Cmd{}
 
-	for id, c := range self.OutputSinks {
-		cmds = append(cmds, sinkWatcher(id, c))
+	for id := range self.OutputSinks {
+		cmds = append(cmds, self.sinkWatcher(id))
 	}
 
 	return tea.Batch(cmds...)
@@ -137,18 +156,29 @@ func (self *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 	case newOutputLine:
-		self.Outputs[msg.id] += msg.line + "\n"
+		self.Outputs[msg.id] += msg.line
 
 		// trim to size
 		maxSize := int(self.Config.Store)
 		if len(self.Outputs[msg.id]) > maxSize {
 			self.Outputs[msg.id] = self.Outputs[msg.id][len(self.Outputs[msg.id])-maxSize:]
 		}
+
+		return self, self.sinkWatcher(msg.id) // watch for more output
 	}
 
 	return self, nil
 }
 
 func (self *Model) View() string {
-	return string(self.Outputs[self.TaskIndex])
+	return self.Outputs[self.TaskIndex]
+}
+
+var (
+	ansiCursorSequence = regexp.MustCompile(`\x1B\[[0-9;]*[ABCD]`)
+)
+
+// ansiSanitize removes ANSI cursor sequences from a string, preserving the color codes.
+func ansiSanitize(s string) string {
+	return ansiCursorSequence.ReplaceAllString(s, "")
 }

@@ -2,6 +2,8 @@ package main
 
 import (
 	"fmt"
+	"os"
+	"strings"
 
 	"github.com/fsnotify/fsnotify"
 	"github.com/go-cmd/cmd"
@@ -23,8 +25,9 @@ const (
 )
 
 type Task struct {
-	Prefix   []string
+	Format   string
 	Commands []string
+	LogFile  string
 
 	OutputChan chan string
 
@@ -52,7 +55,18 @@ func (self *Task) Init() {
 func (self *Task) Start(events <-chan TaskCmd) {
 	// dont reset output
 
+	var err error
+
 	self.Closed = false
+
+	var logFile *os.File
+
+	if self.LogFile != "" {
+		logFile, err = os.Create(self.LogFile)
+		if err != nil {
+			panic(err)
+		}
+	}
 
 	var watcherEvt <-chan fsnotify.Event
 	var watcherErr <-chan error
@@ -84,14 +98,13 @@ func (self *Task) Start(events <-chan TaskCmd) {
 	updateStatus := func(statusLong string, status TaskStatus) {
 		self.StatusLong = statusLong
 		self.Status = status
-		self.OutputChan <- fmt.Sprintf("%s", statusLong)
+		self.OutputChan <- fmt.Sprintf("%s\n", statusLong)
 	}
 
 	wait := make(chan struct{})
 
 	go func() {
 		proc := &cmd.Cmd{}
-		defer proc.Stop()
 
 		nextTask := make(chan int, 1)
 
@@ -106,9 +119,12 @@ func (self *Task) Start(events <-chan TaskCmd) {
 					proc.Stop() // stop previous task
 				}
 
-				args := append(self.Prefix[1:], fmt.Sprintf("'%s'", self.Commands[index]))
+				fields := strings.Fields(self.Format)
+				for i, field := range fields {
+					fields[i] = strings.ReplaceAll(field, "%", self.Commands[index])
+				}
 
-				proc = cmd.NewCmdOptions(streamingCmdOptions, self.Prefix[0], args...)
+				proc = cmd.NewCmdOptions(streamingCmdOptions, fields[0], fields[1:]...)
 				proc.Start()
 
 				self.SubtaskIndex = index
@@ -118,6 +134,9 @@ func (self *Task) Start(events <-chan TaskCmd) {
 			case msg := <-events:
 				switch msg {
 				case TaskCmdQuit:
+					if self.SubtaskIndex >= 0 {
+						proc.Stop()
+					}
 					close(wait)
 					return
 				case TaskCmdStart:
@@ -140,9 +159,22 @@ func (self *Task) Start(events <-chan TaskCmd) {
 				}
 
 			case msg := <-proc.Stdout:
+				msg = msg + "\n"
+				if logFile != nil {
+					_, err = logFile.WriteString(msg)
+					if err != nil {
+						panic(err)
+					}
+				}
 				self.OutputChan <- msg
 
 			case msg := <-proc.Stderr:
+				if logFile != nil {
+					_, err = logFile.WriteString(msg)
+					if err != nil {
+						panic(err)
+					}
+				}
 				self.OutputChan <- msg
 
 			case <-proc.Done():
@@ -150,8 +182,16 @@ func (self *Task) Start(events <-chan TaskCmd) {
 				procStatus := proc.Status()
 
 				if procStatus.Error != nil || procStatus.Exit != 0 {
-					status := fmt.Sprintf("Error: %s", procStatus.Error)
+					var status string
+
+					if procStatus.Error == nil {
+						status = fmt.Sprintf("Exited with code %d", procStatus.Exit)
+					} else {
+						status = fmt.Sprintf("Error: %s", procStatus.Error)
+					}
+
 					updateStatus(status, TaskError)
+					close(wait)
 					return
 				}
 
